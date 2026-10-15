@@ -4,48 +4,117 @@ name: Build Premium APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Download repository files
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Extract the uploaded project ZIP
       - name: Extract project
-        run: unzip -o streaming_app_premium_build_ready.zip
+        run: |
+          ZIP_FILE="streaming_app_premium_build_ready.zip"
 
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Project ZIP not found at repository root."
+            ls -la
+            exit 1
+          fi
+
+          unzip -o "$ZIP_FILE"
+
+          echo "Files extracted:"
+          ls -la
+
+      # 3. Set up Java
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # 4. Set up Gradle
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 12266719
-          accept-android-sdk-licenses: true
+      # 5. Locate Android SDK
+      - name: Locate Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
 
+      # 6. Accept Android SDK licenses
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "ERROR: Android sdkmanager was not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+      # 7. Install required Android SDK packages
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
 
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          fi
+
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # 8. Check extracted project
+      - name: Check Android project
+        run: |
+          if [ ! -d "streaming_app_starter" ]; then
+            echo "ERROR: streaming_app_starter folder not found."
+            find . -maxdepth 3 -type f | head -200
+            exit 1
+          fi
+
+          if [ ! -f "streaming_app_starter/app/build.gradle" ] && \
+             [ ! -f "streaming_app_starter/app/build.gradle.kts" ]; then
+            echo "ERROR: App Gradle build file not found."
+            find streaming_app_starter -maxdepth 4 -type f
+            exit 1
+          fi
+
+      # 9. Build debug APK
       - name: Build debug APK
         run: |
           cd streaming_app_starter
-          gradle assembleDebug --no-daemon
 
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --no-daemon
+          else
+            gradle assembleDebug --no-daemon
+          fi
+
+      # 10. Upload generated APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: streaming-premium-debug-apk
           path: streaming_app_starter/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
